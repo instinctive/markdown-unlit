@@ -208,6 +208,151 @@ spec = do
         "3"
         )
 
+    it "expands tangle references" $ do
+      unlit "Foo.lhs" "haskell" . build $ do
+        "```haskell"
+        "main :: IO ()"
+        "main = do"
+        "    -- #greet"
+        ""
+        "-- #greet"
+        "putStrLn \"Hello!\""
+        "```"
+      `shouldBe` (build $ do
+        "#line 2 \"Foo.lhs\""
+        "main :: IO ()"
+        "main = do"
+        "#line 7 \"Foo.lhs\""
+        "    putStrLn \"Hello!\""
+        )
+
+    it "expands tangle references across code blocks" $ do
+      unlit "Foo.lhs" "haskell" . build $ do
+        "```haskell"
+        "main = do"
+        "    -- #greet"
+        "```"
+        "```haskell"
+        "-- #greet"
+        "putStrLn \"Hello!\""
+        "```"
+      `shouldBe` (build $ do
+        "#line 2 \"Foo.lhs\""
+        "main = do"
+        "#line 7 \"Foo.lhs\""
+        "    putStrLn \"Hello!\""
+        )
+
+    it "concatenates same-name tangle blocks" $ do
+      unlit "Foo.lhs" "haskell" . build $ do
+        "```haskell"
+        "-- #imports"
+        "import Data.Map"
+        "```"
+        "```haskell"
+        "-- #imports"
+        "import Data.Set"
+        "```"
+        "```haskell"
+        "module Main where"
+        ""
+        "-- #imports"
+        "```"
+      `shouldBe` (build $ do
+        "#line 10 \"Foo.lhs\""
+        "module Main where"
+        ""
+        "#line 3 \"Foo.lhs\""
+        "import Data.Map"
+        "#line 7 \"Foo.lhs\""
+        "import Data.Set"
+        )
+
+    it "preserves indentation in tangle expansion" $ do
+      unlit "Foo.lhs" "haskell" . build $ do
+        "```haskell"
+        "main = do"
+        "    -- #body"
+        ""
+        "-- #body"
+        "putStrLn \"one\""
+        "putStrLn \"two\""
+        "```"
+      `shouldBe` (build $ do
+        "#line 2 \"Foo.lhs\""
+        "main = do"
+        "#line 6 \"Foo.lhs\""
+        "    putStrLn \"one\""
+        "    putStrLn \"two\""
+        )
+
+    it "handles nested tangle references" $ do
+      unlit "Foo.lhs" "haskell" . build $ do
+        "```haskell"
+        "main = do"
+        "    -- #body"
+        ""
+        "-- #body"
+        "-- #greet"
+        "-- #farewell"
+        ""
+        "-- #greet"
+        "putStrLn \"Hello!\""
+        ""
+        "-- #farewell"
+        "putStrLn \"Goodbye!\""
+        "```"
+      `shouldBe` (build $ do
+        "#line 2 \"Foo.lhs\""
+        "main = do"
+        "#line 10 \"Foo.lhs\""
+        "    putStrLn \"Hello!\""
+        "#line 13 \"Foo.lhs\""
+        "    putStrLn \"Goodbye!\""
+        )
+
+    it "detects circular tangle references" $ do
+      evaluate (unlit "Foo.lhs" "haskell" . build $ do
+        "```haskell"
+        "foo"
+        "-- #a"
+        ""
+        "-- #a"
+        "-- #b"
+        ""
+        "-- #b"
+        "-- #a"
+        "```"
+        ) `shouldThrow` anyErrorCall
+
+    it "leaves unknown tangle references as-is" $ do
+      unlit "Foo.lhs" "haskell" . build $ do
+        "```haskell"
+        "main = do"
+        "    -- #unknown"
+        "```"
+      `shouldBe` (build $ do
+        "#line 2 \"Foo.lhs\""
+        "main = do"
+        "    -- #unknown"
+        )
+
+  describe "parseTangleRef" $ do
+    it "parses a simple reference" $ do
+      parseTangleRef "-- #foo" `shouldBe` Just ("", "#foo")
+
+    it "parses an indented reference" $ do
+      parseTangleRef "    -- #foo" `shouldBe` Just ("    ", "#foo")
+
+    it "rejects lines without --" $ do
+      parseTangleRef "// #foo" `shouldBe` Nothing
+
+    it "rejects lines with extra words" $ do
+      parseTangleRef "-- #foo bar" `shouldBe` Nothing
+
+    it "rejects lines without a name" $ do
+      parseTangleRef "-- #" `shouldBe` Nothing
+
   describe "parse" $ do
     it "yields an empty list on empty input" $ do
       parse "" `shouldBe` []

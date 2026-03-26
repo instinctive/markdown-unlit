@@ -14,6 +14,7 @@ module Text.Markdown.Unlit (
 #ifdef TEST
 , parseReorderingKey
 , parseClasses
+, parseTangleRef
 #endif
 ) where
 
@@ -22,7 +23,9 @@ import           Prelude.Compat
 import           Control.Arrow
 import           Data.Char
 import           Data.List.Compat
+import qualified Data.Map.Strict as Map
 import           Data.Maybe
+import qualified Data.Set as Set
 import           Data.String
 import           System.Environment
 import           System.Exit
@@ -76,11 +79,12 @@ run args =
       writeUtf8 handle str = hSetEncoding handle utf8 >> hPutStr handle str
 
 unlit :: FilePath -> Selector -> String -> String
-unlit src selector = unlines . concatMap formatCodeBlock . sortCodeBlocks . filter (toPredicate selector . codeBlockClasses) . parse
+unlit src selector input =
+  let cbs = sortCodeBlocks . filter (toPredicate selector . codeBlockClasses) . parse $ input
+  in case tanglePass cbs of
+    Left err -> error err
+    Right srcLines -> unlines (formatSourceLines src srcLines)
   where
-    formatCodeBlock :: CodeBlock -> [String]
-    formatCodeBlock cb = ("#line " ++ show (codeBlockStartLine cb) ++ " " ++ show src) : codeBlockContent cb
-
     sortCodeBlocks :: [CodeBlock] -> [CodeBlock]
     sortCodeBlocks = map fst . sortOn snd . addSortKey
       where
@@ -189,3 +193,89 @@ replace x sub = map f
   where
     f y | x == y    = sub
         | otherwise = y
+
+-- Tangling
+
+parseTangleRef :: String -> Maybe (String, String)
+parseTangleRef line =
+  let (indent, rest) = span isSpace line
+  in case words rest of
+    ["--", '#':name]
+      | not (null name) -> Just (indent, '#' : name)
+    _ -> Nothing
+
+toSourceLines :: CodeBlock -> [Line]
+toSourceLines cb = zip [codeBlockStartLine cb ..] (codeBlockContent cb)
+
+buildTangleMap :: [CodeBlock] -> Map.Map String [Line]
+buildTangleMap = foldl' addCodeBlock Map.empty
+  where
+    addCodeBlock :: Map.Map String [Line] -> CodeBlock -> Map.Map String [Line]
+    addCodeBlock acc cb =
+      foldl' addSubBlock acc (splitSubBlocks (toSourceLines cb))
+
+    splitSubBlocks :: [Line] -> [[Line]]
+    splitSubBlocks [] = []
+    splitSubBlocks ls =
+      case dropWhile (all isSpace . snd) ls of
+        [] -> []
+        rest -> let (block, remaining) = break (all isSpace . snd) rest
+                in block : splitSubBlocks remaining
+
+    addSubBlock :: Map.Map String [Line] -> [Line] -> Map.Map String [Line]
+    addSubBlock acc ((_, firstLine) : bodyLines)
+      | Just (_, name) <- parseTangleRef firstLine
+      , not (null bodyLines)
+      = Map.insertWith (\new old -> old ++ new) name bodyLines acc
+    addSubBlock acc _ = acc
+
+expandSourceLine :: Map.Map String [Line] -> Set.Set String -> Line -> Either String [Line]
+expandSourceLine tangleMap seen (n, content) =
+  case parseTangleRef content of
+    Just (indent, name)
+      | Set.member name seen -> Left ("Circular interpolation: " ++ name)
+      | otherwise -> case Map.lookup name tangleMap of
+          Nothing -> Right [(n, content)]
+          Just bodyLines -> do
+            let seen' = Set.insert name seen
+                indented = map (\(ln, s) -> (ln, indent ++ s)) bodyLines
+            fmap concat (mapM (expandSourceLine tangleMap seen') indented)
+    Nothing -> Right [(n, content)]
+
+tangleCodeBlock :: Map.Map String [Line] -> CodeBlock -> Either String [Line]
+tangleCodeBlock tangleMap cb = go True False [] (toSourceLines cb)
+  where
+    go :: Bool -> Bool -> [Line] -> [Line] -> Either String [Line]
+    go _ _ _ [] = Right []
+    go atBoundary inDef pending ((n, content) : rest)
+      | all isSpace content =
+          if inDef
+          then go True False [] rest
+          else go True False (pending ++ [(n, content)]) rest
+      | atBoundary, Just _ <- parseTangleRef content, hasBody rest =
+          go False True [] rest
+      | inDef =
+          go False True [] rest
+      | otherwise = do
+          expanded <- expandSourceLine tangleMap Set.empty (n, content)
+          remaining <- go False False [] rest
+          Right (pending ++ expanded ++ remaining)
+
+    hasBody :: [Line] -> Bool
+    hasBody [] = False
+    hasBody ((_, c) : _) = not (all isSpace c)
+
+tanglePass :: [CodeBlock] -> Either String [Line]
+tanglePass cbs =
+  let tangleMap = buildTangleMap cbs
+  in fmap concat (mapM (tangleCodeBlock tangleMap) cbs)
+
+formatSourceLines :: FilePath -> [Line] -> [String]
+formatSourceLines src = go Nothing
+  where
+    go :: Maybe Int -> [Line] -> [String]
+    go _ [] = []
+    go prev ((n, content) : rest)
+      | maybe True (\p -> n /= p + 1) prev
+      = ("#line " ++ show n ++ " " ++ show src) : content : go (Just n) rest
+      | otherwise = content : go (Just n) rest

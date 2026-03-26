@@ -1,7 +1,8 @@
 # Literate Haskell support for Markdown
 
 `markdown-unlit` is a custom `unlit` program.  It can be used to extract
-Haskell code from Markdown files.
+Haskell code from Markdown files.  It also supports [tangling](#tangling),
+which lets you define named code fragments and assemble them by reference.
 
 To use it with GHC, add
 
@@ -170,6 +171,88 @@ If `-optL` is given multiple times, the patterns are combined with *OR*, e.g.
     -optL foo -optL bar
 
 extracts all code that is either marked with `foo` or `bar`.
+
+## Tangling
+
+Within extracted code, lines of the form `-- #name` act as named block
+definitions or references, letting you present code in any order and assemble
+it during extraction.
+
+A **definition** is a `-- #name` line that appears after a blank line (or at the
+start of a code block) and is followed by one or more body lines:
+
+    ```haskell
+    -- #greet
+    putStrLn "Hello!"
+    ```
+
+A **reference** is a `-- #name` line that appears anywhere else.  It is replaced
+by the named block's body, with the reference line's leading whitespace
+prepended to each expanded line:
+
+    ```haskell
+    main :: IO ()
+    main = do
+        -- #greet
+        -- #farewell
+    ```
+
+Multiple definitions with the same `#name` (even across different code blocks)
+are concatenated in file order.  References may be nested: a definition body
+can itself contain references to other named blocks.  Circular references are
+detected and reported as errors.
+
+GHC `#line` directives in the output point to each line's original position in
+the Markdown source, so compiler errors remain accurate after expansion.
+
+**Example:**
+
+Given this Markdown file:
+
+    ## Main
+
+    ```haskell
+    module Main where
+
+    -- #imports
+
+    main :: IO ()
+    main = do
+        -- #greet
+        -- #farewell
+    ```
+
+    ## Greetings
+
+    ```haskell
+    -- #imports
+    import Data.List (intercalate)
+    ```
+
+    ```haskell
+    -- #greet
+    putStrLn (intercalate ", " ["Hello", "world!"])
+    ```
+
+    ## Farewells
+
+    ```haskell
+    -- #farewell
+    putStrLn "Goodbye!"
+    ```
+
+The extracted output is equivalent to:
+
+```haskell
+module Main where
+
+import Data.List (intercalate)
+
+main :: IO ()
+main = do
+    putStrLn (intercalate ", " ["Hello", "world!"])
+    putStrLn "Goodbye!"
+```
 
 ## Development
 

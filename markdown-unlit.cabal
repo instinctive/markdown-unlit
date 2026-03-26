@@ -33,6 +33,7 @@ library
   build-depends:
       base ==4.*
     , base-compat
+    , containers
   default-language: Haskell2010
 
 executable markdown-unlit
@@ -45,6 +46,7 @@ executable markdown-unlit
   build-depends:
       base ==4.*
     , base-compat
+    , containers
     , markdown-unlit
   default-language: Haskell2010
 
@@ -64,6 +66,7 @@ test-suite spec
       QuickCheck
     , base ==4.*
     , base-compat
+    , containers
     , directory
     , hspec ==2.*
     , silently
